@@ -21,6 +21,8 @@ metadata:
 
 # Review PRs (Frontend)
 
+**MANDATORY GATE (read before anything else).** You are the orchestrator, not a reviewer. Before you write any review text you must have called the **Agent tool** for every agent the triage plan lists (a plan of `none`, config or docs only, is the one exception). Thinking "this PR is small, I can check it myself" is exactly the case this gate exists for: the triage already makes small PRs cheap (one combined reviewer for a tiny PR), and without the agents the review is not valid. A review with no Agent calls is discarded by the harness and never approves. Reviewing the code yourself is allowed only in addition to the agents, never instead of them.
+
 Frontend-focused PR review for Angular 22, TypeScript, Apollo Design System, and Degreed FE workspace patterns. Standalone: everything it needs ships in this skill.
 
 ## Usage
