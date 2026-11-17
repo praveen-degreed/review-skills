@@ -1,0 +1,304 @@
+---
+name: review-prs-be
+description: >-
+  Deep, high-signal pull-request review for the Degreed Coach Builder
+  Python/FastAPI backend (Azure OpenAI, Redis, LiveKit voice, DataDog). Runs up
+  to 12 specialized agents, each with its own model, covering code quality, OWASP LLM Top 10 security,
+  prompt-injection & voice/agent safety, async/memory performance, LLM-output
+  fairness, Redis patterns, LangGraph state/lock/checkpointer correctness,
+  vector-search semantics, cross-repo .NET and frontend contract drift, blast radius, and
+  test coverage — then validates every finding with an adversarial second pass
+  and a final judge before posting. Use this when asked to "review a PR / pull request", "check a
+  PR", "is this PR ready", or "review this PR --deep". Pass --deep for two
+  independent reviewers + consensus on high-risk PRs.
+---
+
+# review-prs
+
+High-signal PR review for the **Degreed Coach Builder** (Python 3.12 / FastAPI / Azure OpenAI / Redis primary data store / LiveKit voice / DataDog) against project conventions, OWASP LLM Top 10, async/memory patterns, LLM-output fairness, and cross-repo contracts.
+
+**Design principle (read first):** *We only want HIGH-SIGNAL findings.* A false positive erodes trust and wastes a senior engineer's time. Every finding must be backed by a verified source line and survive an independent validation pass. When uncertain whether an issue is real, **do not report it.** Better to miss a theoretical issue than to flood the review with noise.
+
+---
+
+## Execution Flow
+
+### Phase 0 — Setup & Pre-flight Gate
+
+Parse the PR URL/number to extract OWNER, REPO, PR_NUMBER. Default repo = `degreed/degreed-coach-builder`.
+
+```bash
+gh pr view <number_or_url> --json url,state,isDraft,author,reviews
+```
+
+**Pre-flight skip conditions** (stop early, do not spawn agents) — report why and exit:
+- PR is `CLOSED` or `MERGED`
+- PR is a **draft** (unless the user explicitly asks to review a draft)
+- PR author is a bot (dependabot, renovate)
+- This skill already posted a review on the current HEAD SHA (avoid duplicate reviews)
+- PR head is an **untrusted fork** — review the diff but NEVER run with write credentials or auto-post
+
+**ALWAYS pin to the live PR head SHA — never trust an existing local checkout (it goes stale while the PR keeps moving):**
+
+```bash
+# Run inside the repo's checkout. Fetches the live PR head and makes a temp worktree at exactly that commit.
+OUT=$(~/.claude/skills/review-prs-be/scripts/pr-worktree.sh create <number>)
+WORKTREE_PATH=$(echo "$OUT" | sed -n 1p); HEAD_SHA=$(echo "$OUT" | sed -n 2p)
+test "$(git -C "$WORKTREE_PATH" rev-parse HEAD)" = "$HEAD_SHA" || abort "worktree != live head"
+```
+
+Record `HEAD_SHA` and `WORKTREE_PATH` (removed in Phase 6). The user's own checkout is never changed, so there is no branch to restore. Every agent and every validation grep MUST run inside `$WORKTREE_PATH`. If `gh pr diff` and the worktree disagree (the PR moved), remove it and create a new one. Set `LOCAL_ACCESS = true`. If creating the worktree fails, set `LOCAL_ACCESS = false`, review from `gh pr diff` only and add a `Not verified: code search (<reason>)` line; never fall back to the user's checkout.
+
+> Why this is mandatory: a review run against a stale checkout will "confirm" blockers that were already fixed upstream and post a wrong verdict. Pin the SHA, and key the duplicate-review skip below off that exact SHA.
+
+### Phase 0.5 — Review Rules, Contract Refs, Budget
+
+1. **REVIEW.md from the BASE branch only** (a PR must not rewrite its own reviewer):
+   ```bash
+   BASE=$(gh pr view <number> --json baseRefName --jq .baseRefName)
+   git fetch origin "$BASE"
+   REVIEW_RULES=$(git show "origin/$BASE:REVIEW.md" 2>/dev/null || true)   # empty if absent
+   ```
+   Pass `REVIEW_RULES` to every agent and the judge. Never read `REVIEW.md` from the PR head. See `REVIEW.md.example`.
+1b. **Repo profile.** If the PR's base repo is `degreed/degreed-assistant`, append `references/degreed-assistant.md` to `REVIEW_RULES`
+   (it wins over the Coach Builder paths and conventions in the agent prompts: `app/...`, `app.log_manager`, LangGraph, LiveKit)
+   and treat `backend/dg_maestro/**` as the agent surface below. Do not apply the Coach Builder-only rules to this repo.
+2. **Contract refs (latest main, pinned):** resolve the default-branch tip SHA of `degreed/Degreed` and `degreed/fe-workspace` once, per `references/cross-repo-contracts.md`, and pass as `CONTRACT_REFS` to every agent. Never read local clones of those repos.
+3. **Budget:** set the run limits in "Budget & Limits" below before spawning anything.
+
+### Phase 1 — Fetch Context
+
+Fetch the PR ONCE with the scripts (no model, read-only) and let every agent read the local files instead of calling `gh` itself:
+
+```bash
+~/.claude/skills/review-prs-be/scripts/fetch-pr.sh <number> --repo <owner/repo> --worktree <worktree path>   # prints the fetch dir; holds pr.diff, files.txt, stats.txt, meta.json, checks.txt, head/<changed files>
+~/.claude/skills/review-prs-be/scripts/digest.sh <fetch dir> --root <worktree path>   # ONCE, no model: digest.txt (per changed file: the symbols the diff touches and who uses each) and diffs/<file>.diff (one diff per file); agents read these instead of searching and re-reading the whole diff
+~/.claude/skills/review-prs-be/scripts/triage.sh <fetch dir>         # SIZE, KIND, HINTS, TIER, BASELINE (deterministic first look; the CHANGE_BRIEF `risks:` refines it)
+~/.claude/skills/review-prs-be/scripts/ci-failures.sh <fetch dir>    # only when checks.txt is not empty: WHY CI failed (pytest/ruff), so a review never says "CI red" without a cause
+```
+
+Call each script by its absolute path as one command (no `cd`, no variables). Fall back to `gh pr view` / `gh pr diff` only if `fetch-pr.sh` fails. For a very large diff, do NOT inline it into agents: give them the fetch dir and the worktree path and have them read `pr.diff` and `head/<path>`.
+
+### Phase 1.3 — Change Understanding (BEFORE any review)
+
+Two steps, cheap first:
+1. **`py-change-gatherer`** (haiku) collects the raw facts: the linked ticket (keys `[A-Z][A-Z0-9]+-[0-9]+` from title, branch, body, commits, comments, read with `jira issue view <KEY> --plain` and `--raw` for linked issues and parent), the PR description (a bot-generated body is marked and ignored for intent), full commit-message bodies, the PR author's own comments, and docs in the diff. It returns `SOURCE_FACTS`. If `jira` is unavailable it records `ticket: unavailable`; it never invents ticket content.
+2. **`py-change-analyst`** (opus) receives `SOURCE_FACTS`, reads the changed code, its callers and callees, and the code being replaced, and returns the `CHANGE_BRIEF` (goal, mechanism, success metric, evidence given, intended trade-offs, invariants, assumptions, libraries/APIs touched, code paths to trace, shared-code candidates, open questions). It does not re-fetch what the gatherer already collected.
+
+Every later agent, the validators and the judge receive the `CHANGE_BRIEF`. The brief's `assumptions` and `shared_candidates` are unverified and agents must check them before relying on them. If either step fails, continue with the PR title/body and mark the footer "change brief unavailable"; do not skip the review.
+
+### Phase 1.4 — Complexity Score → Auto Deep Mode
+
+Compute a score to decide depth automatically (no manual flag needed):
+
+| Signal | Points |
+|--------|--------|
+| >20 files changed | +5 |
+| >500 lines added/deleted | +3 |
+| Touches `app/api/`, `app/llm/`, `app/db/redis_*`, `app/realtime/`, `app/services/validation` | +2 each |
+| Touches `app/agents/**` (LangGraph graph/nodes/state/session-lock/checkpointer) or a new `app/services/<feature>/` package | +2 each |
+| degreed-assistant: touches `backend/dg_maestro/**` (delegate agents: pause/approval, streaming, scope, identity, liveness) | +2 each |
+| Redis schema / vector store / vector-threshold / Pydantic request-response model change | +2 |
+| Prompt template / guardrail / tool-schema change | +2 |
+| New dependency in requirements.txt | +1 |
+
+**Hard overrides (force deep mode regardless of score):** any change to auth (`security_validation`, `internal_auth`, middleware, `cookie_manager`), `server.py`, `settings.py`, `redis_manager`, `log_manager`, `api/__init__.py`, anything under `app/agents/**` (stateful LangGraph agents, session locks, checkpointers), or files matching `prompt|sanitiz|auth|translat|session_lock|checkpoint|circuit|breaker`.
+
+**Score ≥ 7 OR any hard override → run Deep Mode** (`references/deep-mode.md`). Otherwise standard mode. Tell the user which mode was selected and why.
+
+### Phase 1.5 — Review History
+
+```bash
+gh api repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews
+gh pr view $PR_NUMBER --json comments
+```
+
+Build a context map (FIXED / STILL OPEN / PARTIALLY FIXED) for every prior finding and pass it to all agents. **Agents must NOT re-raise FIXED issues** — they may only verify a carry-forward is still present or escalate it.
+
+### Phase 2 — Agent Reviews (Parallel)
+
+Launch the specialized agents IN PARALLEL (Agent tool, background), each with `subagent_type` = its name below. The agent definitions live in `agents/<name>.md` (installed to `.claude/agents/`) and carry their own model, effort, turn cap and read-only tool settings; do not override them. Each receives, in the task prompt: the shared context from `references/agent-prompts.md` (diff, review-history map, worktree path), `REVIEW_RULES`, `CHANGE_BRIEF`, `CONTRACT_REFS`, and the relevant reference files. Every reviewer reads `CHANGE_BRIEF` first and reviews the code against the change's goal, not just a checklist.
+
+**Pick the reviewers from what the change does, not from its size or paths.** Every step of the pipeline runs on every PR (understand the change, select reviewers, review, dedup, validate, judge, post). Only *which reviewers run* depends on the change. Measured reason: a 2-file, +30/-1 PR ran 12 agents and about 6M tokens, far out of proportion.
+
+1. Read the `risks:` line of the `CHANGE_BRIEF` (written by `py-change-analyst`): the things this specific change could break, each tagged with a category and the code it concerns.
+2. For each risk, run the one reviewer that can check it. A reviewer with no risk mapped to it does not run.
+
+| Risk category in the brief | Reviewer |
+|---|---|
+| `logic` (conditions, edge cases, error and cancel paths, async) | `py-logic-reviewer` |
+| `contract` (a model, enum, field or stream part another repo reads) | `py-contract-checker` |
+| `security` (untrusted input, auth, secrets, prompt injection, data exposure) | `py-code-reviewer` + `py-architecture-reviewer` (trust boundary) |
+| `state` (sessions, locks, retries, multi-pod, pause/resume, approvals, streaming) | `py-agent-graph-reviewer` (on degreed-assistant: section 3 of its repo profile) |
+| `tenancy` (org/user scoping of Redis keys, cache, conversations) | `py-architecture-reviewer` |
+| `blast-radius` (shared code, callers, config) | `py-impact-analyzer` |
+| `llm-behavior` (prompt, persona, masking, language, guardrails) | `py-fairness-reviewer` |
+| `voice` | `py-voice-reviewer` |
+| `library` (a library or SDK newly or differently used) | `py-docs-conformance` |
+| `tests` (new behavior with no test, or weak tests) | `py-test-analyzer` |
+| `duplication` (new helper that may exist already) | `py-reuse-finder` |
+| `style` or no risk beyond the baseline | none extra |
+
+**The orchestrator never reviews the code in place of the agents, whatever the PR size.** Even a 1-file PR runs the baseline: `py-change-analyst`, `py-code-reviewer` and `py-judge` (cheap, and the only way the review can APPROVE). A review the orchestrator wrote alone, with no agents, is comment-only. **Never run the PR's tests, `pytest`, `ruff` or any code from the PR** (the review runs read-only and such calls are denied); take test and lint results from `checks.txt` and `ci-failures.sh`, and put "tests not run by this review; CI result: ..." under `Not verified`.
+
+`py-code-reviewer` (baseline quality) and the judge always run. `py-simplifier` runs only on a PR with more than 10 changed files or when the brief lists `duplication`. Print the risks you found, the agent chosen for each, and the agents skipped with the reason, at the top of the review. If the brief is unavailable, fall back to the full table below. A complete run of the selected reviewers can still APPROVE; an unresolved risk with no reviewer able to check it is a `Not verified` item and makes the review comment-only.
+
+| # | Agent | Model | Focus |
+|---|-------|-------|-------|
+| 1 | `py-code-reviewer` | sonnet | endpoint patterns, typing, dead code, memory patterns |
+| 2 | `py-logic-reviewer` | opus | logic, async, OWASP LLM01/02/05/06/07/09/10, prompt injection |
+| 3 | `py-test-analyzer` | sonnet | test quality, coverage, fixtures, CI-will-fail checks, eval tests |
+| 4 | `py-simplifier` | sonnet | pythonic idioms, reuse, performance (NON-BLOCKING) |
+| 5 | `py-architecture-reviewer` | opus | SOLID, data layer, reuse/duplication (astdup), LLM trust-boundary & agent safety |
+| 6 | `py-impact-analyzer` | opus | in-repo consumer chains, prompt chains, blast radius |
+| 7 | `py-fairness-reviewer` | sonnet | LLM-output fairness/bias, language parity (conditional) |
+| 8 | `py-voice-reviewer` | sonnet | LiveKit/realtime turn/interruption/budget, voice DTO breakage (conditional) |
+| 9 | `py-agent-graph-reviewer` | opus | LangGraph state/reducer, lock TTL vs budget, checkpointer I/O, circuit breakers, vector distance-vs-similarity (conditional). On degreed-assistant it runs when the diff touches `backend/dg_maestro/**` and reviews the delegate-agent surface (pause/approval stash, streaming, scope, liveness) per `references/degreed-assistant.md` |
+| 10 | `py-contract-checker` | opus | Python vs .NET `degreed/Degreed` and frontend `degreed/fe-workspace` contract breaks at pinned latest-main SHAs (conditional) |
+| 11 | `py-docs-conformance` | opus | code vs the official docs of the libraries/APIs it uses; documented or built-in alternatives; loop, batching, retry and I/O performance (conditional, see below) |
+| 12 | `py-reuse-finder` | sonnet | existing shared helpers/modules the new code duplicates or bypasses, with a concrete replacement (runs on any code change) |
+
+The model map is a starting hypothesis; tune it with the eval in "Tuning" below. Reviewers report everything they can evidence and tag severity; they do not self-filter (instructions to be conservative suppress real findings). Filtering happens in Phases 4-4.6.
+
+Agent 12 (`py-reuse-finder`) runs on every PR that changes code (skip for docs-only or test-only PRs). Agent 11 (`py-docs-conformance`) runs only when `CHANGE_BRIEF.libraries_apis` lists a library, SDK or service the diff actually calls, or the diff has hot loops/batching/retry code; it is the most expensive reviewer, so skip it for pure refactors and config edits. Only they (and `py-architecture-reviewer` for reuse) look for existing shared code or check docs conformance; the other reviewers are told not to, so the work is not repeated. Agents 7, 8, 9, and 10 are **conditional** — spawn only when the diff touches the relevant surface (prompt templates / identity interpolation / multilingual for fairness; `realtime`/voice/agent-session for voice; `app/agents/**`, session locks, checkpointers, circuit breakers, or vector-threshold logic for agent-graph; request/response models, enums, SSE events, or API response shapes for contract-checker). Each agent returns raw, unfiltered findings in the standard finding format (see below).
+
+### Phase 3 — Dedup Stage (NEW — before filtering)
+
+The agents overlap (code + logic + architecture often flag the same site). Merge before filtering:
+- **Deterministic merge** only on identical `(file, source_line)`.
+- **Narrow LLM merge** only if same `(file, function, issue_class)` AND `|line_a − line_b| ≤ 5` AND both describe the same source construct. Use **max severity**, credit all agents (agreement count = a confidence signal).
+- "Related" findings are cross-referenced, never merged. **When in doubt, do not merge.**
+
+> **Dedup-failure fallback (graceful degradation):** the dedup step is a single agent and can fail (timeout, stall, socket error). If it errors or returns nothing, **do NOT abort** — skip merging, carry the raw findings straight into Phase 4 validation, and note "dedup skipped — validating unmerged set" in the run log. Validation is per-finding, so unmerged near-duplicates cost a little extra work but never lose a finding; collapse any surviving duplicates by hand in Phase 5. Never let a dedup failure block the verdict.
+
+### Phase 4 — Validation Second Pass (NEW — the core anti-false-positive step)
+
+**Step 0, free:** before any validator runs, check every finding's citation with `scripts/verify-citations.sh <fetch dir> 'path:line=token' ...` (one call, one quoted argument per finding; `token` is the identifier the finding relies on). A finding whose line does not exist or does not contain its token is re-located or dropped. Only then launch model validators, and only for findings of Medium severity or higher; Low findings that passed the script check go straight on.
+
+For EACH surviving finding, launch a parallel validation sub-agent (Agent tool, `model: "sonnet"`, prompt from `references/agent-prompts.md` Validation Sub-Agent) given only: the PR title/description, the `goal` and `intended_tradeoffs` lines of the `CHANGE_BRIEF`, and that single finding. Its job is to **re-open the actual source file and confirm or kill** the finding — adversarially (try to falsify it).
+
+- It must quote the verified **source line** (not a diff offset). If it cannot point to a line, the finding is dropped.
+- It assigns a **confidence 1–10** and a verdict: `TRUE_POSITIVE / LIKELY_TP / LIKELY_FP / FALSE_POSITIVE / OUT_OF_SCOPE`.
+- It flags `ACTIVELY_HARMFUL` if the finding's suggested fix would introduce a new bug (veto).
+
+This pass is what kills the diff-line-vs-source-line false positive and hallucinated findings.
+
+### Phase 4.5 — Practical Filter
+
+Apply `references/decision-rules.md`:
+1. Drop anything matching the **Precedents list** (known-intentional patterns).
+2. Hard-drop validation confidence **< 8** (standard) / **< 7** (deep mode).
+3. Apply threat-model-relative severity (±1 levers).
+4. Apply the 4-axis filter (probability × impact, tempered by cost-of-fix and verifiability).
+
+Record every dropped/downgraded finding with its reason for the report.
+
+### Phase 4.6 — Judge (final decision)
+
+Run `py-judge` (opus, medium effort) once over all findings that survived Phase 4.5. Input: `CHANGE_BRIEF`, PR title/description, `REVIEW_RULES`, and each finding with its validator verdict and cited code snippet (not the full diff). Output per finding: `CONFIRMED / REFUTED / UNCERTAIN`, final severity, rank, and merge of same-root-cause findings. Only `CONFIRMED` findings go into the review; `REFUTED` ones are listed in the dropped log with the judge's reason.
+
+**Escalation (sparingly):** re-judge a finding with `py-judge-escalation` (fable) only when ALL hold: the judge said `UNCERTAIN`, severity is High or Critical, and the finding touches a high-risk path (the Phase 1.4 hard-override list). Cap at `MAX_ESCALATIONS` (default 3) per review, highest severity first. A finding still `UNCERTAIN` after escalation goes into the review as "Needs human check" with its `human_check` line, never silently dropped, never counted as a blocker on its own.
+
+**Judge failure:** if `py-judge` errors or returns nothing, fall back to the Phase 4.5 result, note "judge skipped" in the footer, and do not auto-post a formal verdict (same rule as the Safety Guardrail).
+
+### Phase 5 — Compose & Post
+
+1. Format `CONFIRMED` findings into the 18-category template (`references/review-template.md`). Add a footer: the change brief sources (ticket key or unavailable), models used per agent, agent count and escalations, and `verified against Degreed@<sha7>, fe-workspace@<sha7>` from `CONTRACT_REFS`.
+2. Apply APPROVE / REQUEST CHANGES criteria (`references/decision-rules.md`).
+3. **Post automatically; do not ask for confirmation.** The request to review the PR is the authorization. Only the Safety Guardrail below limits what is posted: a complete review on a trusted (non-fork) PR is posted with its APPROVE / REQUEST CHANGES decision; anything else is surfaced as described there.
+4. Post:
+
+```bash
+# APPROVE
+gh pr review $PR_NUMBER --approve --body "$(cat <<'EOF'
+<formatted review>
+EOF
+)"
+# REQUEST CHANGES
+gh pr review $PR_NUMBER --request-changes --body "$(cat <<'EOF'
+<formatted review>
+EOF
+)"
+```
+
+Post **one comment per unique issue** (no duplicates). Only attach a committable suggestion when it fixes the issue *entirely*; for larger fixes, describe without a suggestion block.
+
+**Safety Guardrail:** if `gh` fails, the diff is incomplete, an agent errors, or the PR is an untrusted fork — post nothing with `--approve`/`--request-changes`; surface findings as "Review Incomplete — Manual Decision Required." (For an untrusted fork, show them to the requester only and post nothing to the PR. For an incomplete review on a trusted PR, post them as a plain `gh pr review --comment`, never a decision.)
+
+### Phase 6 — Cleanup
+
+Remove the temp worktree after posting, and also when the review ends early, aborts or posts nothing:
+
+```bash
+~/.claude/skills/review-prs-be/scripts/pr-worktree.sh cleanup "$WORKTREE_PATH"
+```
+
+The script removes only a `review-wt-<number>.*` directory directly inside the temp dir and refuses anything else; if it errors, say so in one line and never retry with a broader `rm`. If deep mode created a team, tear it down. Report completion.
+
+---
+
+## Budget & Limits
+
+Set before Phase 2 and print in the footer, with the tokens each agent reported (the harness returns a token count per agent; sum them and show the total):
+
+| Limit | Default | Notes |
+|-------|---------|-------|
+| Reviewer agents | gatherer + analyst + those selected by Phase 2 (max 12) | each also capped by its `maxTurns` |
+| Validators | one per finding that survives dedup; cap 40, highest severity first | |
+| `MAX_ESCALATIONS` | 3 | fable judge calls |
+| Fix-review loops | 3 rounds | after 3, stop and ask for a rethink instead of looping |
+
+Hard caps for the harness (set in the environment that runs the review): `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`, `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`, and `max_budget_usd` when running via the Agent SDK. If a cap is hit, mark the review PARTIAL and do not auto-post.
+
+Agent `tools` cannot restrict Bash to specific commands, so read-only Bash is by instruction. For enforcement add `permissions.deny` rules in the runner's settings, e.g. `Bash(git push *)`, `Bash(git commit *)`, `Bash(gh pr merge *)`, `Bash(gh pr review *)` (posting is done only by the orchestrator in Phase 5).
+
+## Tuning (eval before changing models)
+
+The model map is a hypothesis. Re-run a PR with known findings (a past PR with confirmed High bugs) with each agent at two models, record recall, false positives and cost, and keep the cheapest model that still finds that agent's bugs. Check the judge keeps the known bugs and drops noise; move to a stronger judge only if the eval shows it finds more.
+
+---
+
+## Standard Finding Format
+
+```
+FINDING:
+  category:   <one of the 18 categories>
+  severity:   Critical | High | Medium | Low | Cosmetic
+  confidence: 1-10            (set by validation pass)
+  verdict:    TRUE_POSITIVE | LIKELY_TP | LIKELY_FP | FALSE_POSITIVE | OUT_OF_SCOPE | ACTIVELY_HARMFUL
+  file:       <path>
+  line:       <SOURCE file line — verified by opening the file, NOT a diff offset>
+  title:      <short>
+  detail:     <correct vs incorrect, why it matters>
+  owasp:      <LLM01-LLM10 or N/A>
+  evidence:   <project-file: quoted line>   (no claim without a citable line)
+```
+
+---
+
+## Deep Mode
+
+Auto-triggered by Phase 1.4, or forced with `--deep`. Two independent reviewers (one **adversarial challenger**) + consensus + a single impact-analyzer run + a Stage-2 self-critique. See `references/deep-mode.md`.
+
+---
+
+## References
+
+| File | Purpose | When Loaded |
+|------|---------|-------------|
+| `agents/*.md` | `py-change-gatherer`, `py-change-analyst`, the 12 reviewer agents + `py-judge` + `py-judge-escalation` (model/effort/tools frontmatter; installed to `.claude/agents/`) | Phase 2, 4.6 |
+| `references/agent-prompts.md` | Shared context template, shared security/reuse addendum, validation sub-agent prompt | Phase 2, 4 |
+| `REVIEW.md.example` | Template for repo-level review rules (read from the base branch) | Phase 0.5 |
+| `references/decision-rules.md` | Confidence cutoff, precedents, severity levers, approve/reject criteria | Phase 4–5 |
+| `references/review-template.md` | GitHub review template (18 categories) | Phase 5 |
+| `references/deep-mode.md` | Adversarial 2-reviewer consensus + self-critique protocol | Phase 1.4 (deep) |
+| `references/degreed-assistant.md` | Repo profile for `degreed/degreed-assistant` (layout, conventions, the Maestro agent surface); wins over the Coach Builder patterns | Phase 0.5 (that repo only) |
+| `references/codebase-patterns.md` | Project correct/wrong patterns + valid-not-findings | Phase 2 (all agents) |
+| `references/python-patterns.md` | Python/FastAPI/async anti-pattern reference | Phase 2 (agents 1,2,4) |
+| `references/llm-security-checks.md` | OWASP LLM taxonomy, per-tool abuse, agentic/voice threat model | Phase 2 (agents 2,5,8) |
+| `references/cross-repo-contracts.md` | Pinned latest-main contract checks vs `degreed/Degreed` (.NET) and `degreed/fe-workspace` | Phase 0.5, 2 (agent 10) |
+| `references/fairness-checks.md` | Inference-time LLM-output fairness & language-parity checks | Phase 2 (agent 7) |
+| `references/voice-checks.md` | LiveKit/realtime agent review checks | Phase 2 (agent 8) |
+| `references/agent-graph-checks.md` | LangGraph state/reducer, lock-TTL, checkpointer I/O, circuit-breaker, cross-mode resume | Phase 2 (agent 9) |
+| `references/vector-checks.md` | Cosine distance-vs-similarity, threshold parity, `.format()` param-drop, embedding dims | Phase 2 (agents 9, 5) |
+| `references/astdup.py` | Stdlib AST-skeleton duplicate/near-dup detector | Phase 2 (agent 5) |
