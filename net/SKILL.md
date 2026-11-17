@@ -30,7 +30,7 @@ The main review skill for `degreed/Degreed`. The review rules belong to the .NET
 
 ### Phase 0 - Preflight
 1. Parse the PR URL or number. Default repo `degreed/Degreed`.
-2. `gh pr view <PR> --repo <repo> --json state,isDraft,author,isCrossRepository,baseRefName,headRefOid,changedFiles,title`. Stop when the PR is not `OPEN`, is a draft, or is authored by a bot: write one short paragraph saying why (no scoreboard, no findings) and end with the single line `DEX_VERDICT: skip`. A skip posts **nothing** to GitHub; the harness only tells the requester. Pin `headRefOid`; the review is of exactly that commit.
+2. `gh pr view <PR> --repo <repo> --json state,isDraft,author,isCrossRepository,baseRefName,headRefOid,changedFiles,title`. Stop when the PR is not `OPEN` or is authored by a bot (a **draft PR is reviewed like any other**; do not stop for it): write one short paragraph saying why (no scoreboard, no findings) and end with the single line `DEX_VERDICT: skip`. A skip posts **nothing** to GitHub; the harness only tells the requester. Pin `headRefOid`; the review is of exactly that commit.
 3. A fork PR (`isCrossRepository`) is analysed but **never posted**.
 
 ### Phase 1 - Fetch once and route (no model, read-only)
