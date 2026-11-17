@@ -4,7 +4,7 @@ description: >
   Main PR review skill for the Degreed .NET monolith (degreed/Degreed). Use when asked to review a pull request in that repo,
   or given a degreed/Degreed PR URL, even without the word "review". It holds no review rules itself: it routes the PR to the
   team's own skills in the repo (dg-pr-review for general changes, dg-maestro-review for Maestro/aicoach changes), wraps them with
-  a fetch-once step, a mandatory-agents gate, citation verification and one comment-only post. Not for the frontend (review-prs)
+  a fetch-once step, a mandatory-agents gate, citation verification and one posted review with a real decision (approve, request changes or comment). Not for the frontend (review-prs)
   or the Python backends (review-prs-be).
 argument-hint: "<PR_URL or number>"
 allowed-tools: Bash Read Glob Grep Agent Skill
@@ -30,7 +30,7 @@ The main review skill for `degreed/Degreed`. The review rules belong to the .NET
 
 ### Phase 0 - Preflight
 1. Parse the PR URL or number. Default repo `degreed/Degreed`.
-2. `gh pr view <PR> --repo <repo> --json state,isDraft,author,isCrossRepository,baseRefName,headRefOid,changedFiles,title`. Stop and say why when the PR is not `OPEN`, is a draft, or is authored by a bot. Pin `headRefOid`; the review is of exactly that commit.
+2. `gh pr view <PR> --repo <repo> --json state,isDraft,author,isCrossRepository,baseRefName,headRefOid,changedFiles,title`. Stop when the PR is not `OPEN` or is authored by a bot (a **draft PR is reviewed like any other**; do not stop for it): write one short paragraph saying why (no scoreboard, no findings) and end with the single line `DEX_VERDICT: skip`. A skip posts **nothing** to GitHub; the harness only tells the requester. Pin `headRefOid`; the review is of exactly that commit.
 3. A fork PR (`isCrossRepository`) is analysed but **never posted**.
 
 ### Phase 1 - Fetch once and route (no model, read-only)
@@ -41,7 +41,7 @@ Run each as ONE command with its full absolute path, no `cd`, no variables, no p
 ~/.claude/skills/review-prs-net/scripts/digest.sh <fetch dir> --root <worktree dir>
 ~/.claude/skills/review-prs-net/scripts/triage.sh <fetch dir>
 ```
-`triage.sh` prints `ROUTE maestro|general`, the file counts, and `CLAUDE_DIR yes|no`. If `CLAUDE_DIR yes`, the PR changes `.claude/` (skills, agents, hooks): the skills in this checkout could have been rewritten by the PR, so do NOT run them. Post nothing; reply that the PR needs a human review and why.
+`triage.sh` prints `ROUTE maestro|general`, the file counts, and `CLAUDE_DIR yes|no`. If `CLAUDE_DIR yes`, the PR changes `.claude/` (skills, agents, hooks): the skills in this checkout could have been rewritten by the PR, so do NOT run them. Post nothing: reply that the PR needs a human review and why, ending with `DEX_VERDICT: skip`.
 Read `checks.txt` (failing CI checks only; an empty file means nothing is failing).
 
 ### Phase 2 - Run the team skill for the route
@@ -56,15 +56,19 @@ Read `checks.txt` (failing CI checks only; an empty file means nothing is failin
 3. If `checks.txt` is not empty, run `~/.claude/skills/review-prs-net/scripts/ci-failures.sh <fetch dir>` and say why CI failed; never report red CI as green.
 4. Put what you could not verify (tests not run, ticket unreadable, an agent that did not finish) under `Not verified`.
 
-### Phase 4 - Output and post
-- **Always comment-only.** Keep the team skill's assessment as text ("Reviewer's view: ..."), but never use `--approve` or `--request-changes`: a human decides.
+### Phase 4 - Decide, output and post
+Decide from the verified findings and the run, with the same standard as the other review skills:
+- **Request changes:** at least one verified Critical or High finding.
+- **Approve:** no Critical or High finding, every agent the team skill selected finished, nothing it planned was skipped, no CI check is failing (`checks.txt` empty), and no `Not verified` item that blocks the decision.
+- **Comment:** anything else (incomplete run, an agent that did not finish, an unreadable ticket that matters, red CI you could not explain). Say why under `Not verified`.
 - Footer: which team skill ran (`dg-pr-review` or `dg-maestro-review`), the route and why, which agents ran, what was skipped.
-- Write the review to `<fetch dir>/review-body.md`. If the harness says **DRAFT MODE** (as Dex does for this repo), give the review as your final answer and stop: the harness posts it. Otherwise show it to the user and, only if they say so, post it with ONE command: `gh pr review <number> --repo <repo> --comment --body-file <fetch dir>/review-body.md` (never an inline multi-line `--body`).
+- End the review with ONE last line, exactly: `DEX_VERDICT: approve`, `DEX_VERDICT: request_changes`, `DEX_VERDICT: comment` or (when nothing was reviewed, see Phase 0 and Phase 1) `DEX_VERDICT: skip`. The harness reads it and removes it before posting. Whatever the line says, a run in which no agent ran is never posted to GitHub.
+- Write the review to `<fetch dir>/review-body.md`. If the harness says **DRAFT MODE** (as Dex does for this repo), give the review as your final answer and stop: the harness posts it with the decision you chose (and downgrades an approve to a comment if no agent ran, or if the PR is the poster's own). Otherwise show it to the user and, only if they say so, post it with ONE command: `gh pr review <number> --repo <repo> --approve|--request-changes|--comment --body-file <fetch dir>/review-body.md` matching your decision (never an inline multi-line `--body`).
 
 ### Phase 5 - Cleanup
 `~/.claude/skills/review-prs-net/scripts/cleanup-pr.sh <fetch dir>` and `.../pr-worktree.sh cleanup <worktree dir>` (skip any the harness owns).
 
 ## Rules that never bend
 - Agents are read-only and never call `gh`; only this skill's final step posts.
-- No approve, no request-changes, no merge, no push, no commit.
+- No merge, no push, no commit. Approve only on a complete review that meets the rule in Phase 4.
 - Cost follows the change: the team skills decide which of their agents run; never skip a planned agent to save money, and never add agents they did not ask for.
