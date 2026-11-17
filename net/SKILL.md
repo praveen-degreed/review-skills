@@ -20,7 +20,7 @@ The main review skill for `degreed/Degreed`. The review rules belong to the .NET
 | Team skill | When | How this skill runs it |
 |---|---|---|
 | `dg-pr-review` | any PR that is not Maestro | with the Skill tool, `<number> --analysis-only` (its documented mode for callers: returns the analysis, posts nothing) |
-| `dg-maestro-review` | a changed path matches `maestro|aicoach` | it is user-invoked only, so you cannot call it; read its `SKILL.md` and follow its PR-mode workflow yourself (it composes the `dg-pr-review` domain agents) |
+| `dg-maestro-review` | a changed path contains `maestro` or `aicoach` (case-insensitive) | it is user-invoked only, so you cannot call it; read its `SKILL.md` and follow its PR-mode workflow yourself (it composes the `dg-pr-review` domain agents) |
 
 **Never copy or edit those skills.** They are the team's; this skill only chooses between them, feeds them, and checks what comes back.
 
