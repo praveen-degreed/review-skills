@@ -1,6 +1,6 @@
 # review-skills
 
-The PR review skills for Claude Code, in one repo: **`review-prs`** (frontend, Angular/TypeScript) and **`review-prs-be`** (backend, Python/FastAPI: Coach Builder and degreed-assistant).
+The PR review skills for Claude Code, in one repo: **`review-prs`** (frontend, Angular/TypeScript), **`review-prs-be`** (backend, Python/FastAPI: Coach Builder and degreed-assistant) and **`review-prs-net`** (the .NET monolith `degreed/Degreed`: the main skill that routes to the team's `dg-pr-review` and `dg-maestro-review`).
 
 Both do the same job in the same way: fetch the PR once, work out what the change does, run only the reviewers that change needs, verify every finding against the code, and post one review. The no-model steps (fetch, digest, citation check, CI failures, worktree) are shared; the language-specific parts (triage rules, agents, patterns) are per skill.
 
@@ -13,13 +13,14 @@ common/scripts/    shared by both skills (edit here once)
   ci-failures.sh     why CI failed (Jest/Angular and pytest/ruff)
   pr-worktree.sh     a throwaway worktree of the PR head   cleanup-pr.sh   remove the fetch dir
 fe/                review-prs: SKILL.md, agents/ (fe-*), references/, scripts/ (triage, split, scan, lint, find-endpoint), evals/
+net/               review-prs-net: SKILL.md (routes to the team skills that live in degreed/Degreed) and scripts/triage.sh (the routing); no agents of its own
 be/                review-prs-be: SKILL.md, agents/ (py-*), references/ (incl. the degreed-assistant repo profile), scripts/triage.sh
 install.sh         installs one or both skills
 ```
 
 ## Install
 ```
-gh api repos/praveen-degreed/review-skills/contents/install.sh -q .content | base64 -d | bash -s -- all     # or: fe | be
+gh api repos/praveen-degreed/review-skills/contents/install.sh -q .content | base64 -d | bash -s -- all     # or: fe | be | net
 REVIEW_SKILLS_SRC=$PWD ./install.sh all                                                                   # from a clone
 CLAUDE_HOME=/tmp/try ./install.sh all                                                                     # try it without touching ~/.claude
 ```
