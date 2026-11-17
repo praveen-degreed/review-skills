@@ -25,7 +25,7 @@ CLAUDE_HOME=/tmp/try ./install.sh all                                           
 ```
 The installer **copies** the shared scripts into each skill's own folder (`~/.claude/skills/review-prs/scripts`, `.../review-prs-be/scripts`), because a skill must be a self-contained folder. The repo keeps one source; each install keeps one copy per skill. A skill's own script of the same name wins over a shared one. The previous install of a skill is kept once in `~/.claude/backup-review-skills/`. It installs from `main` on GitHub: a change takes effect only after it is merged and the installer is re-run.
 
-## Working on it
+## Changing the skills (contributing)
 - A fix to a shared step goes in `common/scripts` once and reaches both skills on the next install.
 - Rules that differ by language stay in `fe/` or `be/`. `triage.sh` is per skill on purpose (different file types and risks).
 - After changing scripts, run `fe/evals/run-script-evals.sh`. Dex (the Slack reviewer bot) has its own permission check, `tests/check_permissions.py` in the Dex repo, to run after a script is added or renamed.
