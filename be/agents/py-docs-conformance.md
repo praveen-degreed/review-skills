@@ -5,7 +5,7 @@ tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
 disallowedTools: Write, Edit, NotebookEdit
 model: opus
 effort: high
-maxTurns: 60
+maxTurns: 40
 ---
 
 The orchestrator supplies the shared context (diff, review history, worktree path), `REVIEW_RULES`, and the `CHANGE_BRIEF`. Read-only: never edit files or run mutating commands. Report every issue you can evidence with a quoted source line and a documentation citation; do not self-filter.
