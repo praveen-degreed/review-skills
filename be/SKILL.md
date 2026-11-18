@@ -33,7 +33,7 @@ Parse the PR URL/number to extract OWNER, REPO, PR_NUMBER. Default repo = `degre
 gh pr view <number_or_url> --json url,state,isDraft,author,reviews
 ```
 
-**Pre-flight skip conditions** (stop early, do not spawn agents) — report why and exit:
+**Pre-flight skip conditions** (stop early, do not spawn agents) — report why and exit, ending your final answer with the single line `DEX_VERDICT: skip` (no review was done; the harness uses it to tell a deliberate stop from a shortcut):
 - PR is `CLOSED` or `MERGED`
 - PR is a **draft** (unless the user explicitly asks to review a draft)
 - PR author is a bot (dependabot, renovate)
