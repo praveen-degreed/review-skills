@@ -2,7 +2,7 @@
 
 A PR is `huge` (>1500 added lines or >50 files) when it cannot be reviewed in one pass. Do not stop and do not ask the author to split. Break it into review units, run the full review steps on every unit, then consolidate, verify and post ONE review.
 
-Only if `split-pr.sh` exits 3 (more than 12 code units, roughly >7000 added lines) stop and ask the author to split; say why.
+Only if `split-pr.sh` exits 3 (more than 12 code units, roughly >7000 added lines) stop and ask the author to split; say why. **Exception:** when the prompt says the requester confirmed the PR cannot be split, do NOT stop: review every unit (waves of at most 3), the cross-unit pass and the consolidation as usual, however many units there are.
 
 ## Flow
 
