@@ -16,6 +16,11 @@
 #   R8  (--fetch-dir) every cited line exists in the PR head
 #   R9  (--fetch-dir) failing checks (checks.txt) never read as "green" or "no failing" in the CI line
 #   R10 (--fetch-dir) every failing spec that ci-failures.sh marks IN-PR is named in the review
+#   R11 (--fetch-dir, WARN) a cited line is unchanged context this PR did not add: drop the finding, re-cite the
+#       added line, or say the diff makes that line wrong
+#   R12 (--fetch-dir, WARN) the PR head moved since fetch-pr.sh ran: the findings may describe fixed or changed
+#       code; re-run the scan on the new head and re-check every finding that cites a changed file
+#       (skipped without gh, without pr-ref.txt/meta.json, or with LINT_NO_HEAD_CHECK=1)
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 die() { echo "lint-review: $*" >&2; exit 2; }
@@ -94,11 +99,12 @@ ns=$(printf '%s\n' "$suggest" | grep -c '^- ' || true)
 if [ -n "$fetch" ]; then
   cites=$(printf '%s\n' "$things" | awk '/^- / { i = index($0, " - **"); h = (i ? substr($0, 1, i) : $0); while (match(h, /`[^`]+`/)) { c = substr(h, RSTART + 1, RLENGTH - 2); if (c ~ /:[0-9]+(-[0-9]+)?$/) print c; h = substr(h, RSTART + RLENGTH) } }')
   if [ -n "$cites" ]; then
-    out=$(printf '%s\n' "$cites" | "$here/verify-citations.sh" "$fetch" 2>&1); rc=$?
+    out=$(printf '%s\n' "$cites" | "$here/verify-citations.sh" --added "$fetch" 2>&1); rc=$?
     if [ "$rc" -ne 0 ]; then
       printf '%s\n' "$out" | grep -E '^(BAD|MISMATCH|UNVERIFIABLE)' | while IFS= read -r l; do echo "FAIL R8: $l"; done
       fails=$((fails + 1))
     fi
+    printf '%s\n' "$out" | grep -E '^CONTEXT' | head -8 | while IFS= read -r l; do echo "WARN R11: $l"; done
   fi
 fi
 
@@ -118,6 +124,16 @@ if [ -n "$fetch" ] && [ -s "$fetch/checks.txt" ]; then
     rm -f "$fetch/.r10.tmp"
   else
     warn R10 "checks.txt lists failing checks but ci-failures.sh has not been run (no ci-failures.txt): run it so the cause can be named"
+  fi
+fi
+
+# R12: the head moved since the fetch (a stale review lists fixed items and misses new ones)
+if [ -n "$fetch" ] && [ -z "${LINT_NO_HEAD_CHECK:-}" ] && [ -f "$fetch/pr-ref.txt" ] && [ -f "$fetch/meta.json" ] && command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  read -r ref_repo ref_pr <"$fetch/pr-ref.txt"
+  head_then=$(jq -r '.headRefOid // empty' "$fetch/meta.json" 2>/dev/null)
+  head_now=$(gh pr view "$ref_pr" --repo "$ref_repo" --json headRefOid --jq .headRefOid 2>/dev/null || true)
+  if [ -n "$head_then" ] && [ -n "$head_now" ] && [ "$head_then" != "$head_now" ]; then
+    warn R12 "the PR head moved since the fetch (fetched ${head_then:0:9}, now ${head_now:0:9}): re-run fetch-pr.sh and review-scan.sh, re-check each finding that cites a changed file, drop what is fixed, then lint again"
   fi
 fi
 

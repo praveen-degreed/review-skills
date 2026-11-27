@@ -33,6 +33,7 @@ case $pr in *[!0-9]*) die "invalid PR: $pr" ;; esac
 dir=$(mktemp -d "${TMPDIR:-/tmp/}review-pr-$pr.XXXXXX") || die "mktemp failed"
 echo "$dir"
 
+printf '%s %s\n' "$repo" "$pr" >"$dir/pr-ref.txt"   # lets lint-review.sh warn when the PR head moved after this fetch
 gh pr view "$pr" --repo "$repo" --json title,body,additions,deletions,changedFiles,headRefName,headRefOid,baseRefName >"$dir/meta.json" || die "cannot read PR $repo#$pr"
 gh pr diff "$pr" --repo "$repo" >"$dir/pr.diff" || die "cannot fetch diff"
 gh pr diff "$pr" --repo "$repo" --name-only >"$dir/files.txt" || die "cannot fetch file list"

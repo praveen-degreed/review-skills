@@ -22,34 +22,34 @@ std="kb/repo-instructions/standards"
 has() { grep -E -q "$1" "$dir/files.txt"; }
 line() { printf '%s\n' "$*" >>"$out"; }
 size() { wc -l <"$root/$1" 2>/dev/null | tr -d ' '; }
-add() { # add <file> <why> : list a standards file once with its size and how to read it
+add() { # add <file> <passes> <why> : list a standards file once with its size, the passes that own it and how to read it
   local f="$std/$1"
   [ -f "$root/$f" ] || return 0
   grep -q "^STD $f " "$out" 2>/dev/null && return 0
   local n; n=$(size "$f")
-  if [ "${n:-0}" -gt 120 ]; then line "STD $f ($n lines; too big to read whole: grep the section named in kb/repo-instructions/INDEX.md with -A 30) - $2"
-  else line "STD $f ($n lines; read whole) - $2"; fi
+  if [ "${n:-0}" -gt 120 ]; then line "STD $f ($n lines; too big to read whole: grep the section named in kb/repo-instructions/INDEX.md with -A 30) PASSES: $2 - $3"
+  else line "STD $f ($n lines; read whole) PASSES: $2 - $3"; fi
 }
 
 line "standards: the repo's own written standards for the changed files (checkout: $root)."
-line "Rules: read each STD file listed for your passes BEFORE judging; when a finding breaks one, cite it as Source: \`$std/<file>.md:<line>\` and say which rule. When this skill's passes.md and the repo standard disagree, the repo standard wins: say so in the finding."
+line "Rules: read ONLY the STD files whose PASSES column names one of YOUR passes (Logic, Styling, Angular, A11y, Security, Quality, Test, Apollo), BEFORE judging; reading all of them costs budget you need for the code. When a finding breaks one, cite it as Source: \`$std/<file>.md:<line>\` and say which rule. When this skill's passes.md and the repo standard disagree, the repo standard wins: say so in the finding. End your report with Standards read: <the files you opened>."
 line ""
 
 has '\.(html)$|inline|\.component\.ts$' && {
-  add a11y.md "every template: controls, labels, keyboard, live regions"
-  add design.md "Tailwind classes, Apollo components, tokens, icons, presentational components"
-  add i18n.md "every user-facing string, label, aria text, placeholder, error text; keys, defaults, one i18n object per class"
+  add a11y.md "A11y, Styling" "every template: controls, labels, keyboard, live regions, contrast"
+  add design.md "Styling, Apollo, A11y" "Tailwind classes, Apollo components, tokens, colour contrast (4.5:1 text, 3:1 UI), icons, presentational components"
+  add i18n.md "Quality, Angular" "every user-facing string, label, aria text, placeholder, error text; keys, defaults, one i18n object per class, prose inputs on shared components"
 }
 has '\.ts$' && {
-  add angular.md "component/service patterns, signals, subscription cleanup, lazy loading"
-  add quality.md "size limits, hygiene, comments (one line; delete restating comments), data-dgat on EVERY interactive element in new or changed templates, error handling"
-  add performance.md "lazy loading, bundle, timers, @for track, computed"
-  add security.md "innerHTML, tokens, storage, redirects, user input"
-  add nx.md "imports, library boundaries, barrels, secondary entry points, path aliases"
+  add angular.md "Angular, Logic, Quality" "component/service patterns, signals, afterRenderEffect for focus, @let for repeated template expressions, subscription cleanup, method calls in templates"
+  add quality.md "Quality" "size limits, hygiene, comments (one line; delete restating comments), data-dgat on EVERY interactive element in new or changed templates, error handling"
+  add performance.md "Logic, Security, Angular" "lazy loading, bundle, timers, repeated API calls, @for track, computed"
+  add security.md "Security" "innerHTML, tokens, storage, redirects, user input, console.* and debugger before merge"
+  add nx.md "Quality, Angular" "imports, library boundaries, barrels, secondary entry points, path aliases, file naming"
 }
-has '\.(html|ts)$' && add quality.md "data-dgat contract on interactive elements; comment standard"
-has '\.spec\.ts$' && add testing.md "spec conventions: Spectator, mocks, timers, what to assert"
-has 'tsconfig|project\.json|\.eslintrc|eslint\.config|nx\.json' && add nx.md "path aliases, project config, module boundaries"
+has '\.(html|ts)$' && add quality.md "Quality" "data-dgat contract on interactive elements; comment standard"
+has '\.spec\.ts$' && add testing.md "Test" "spec conventions: Spectator, mocks, timers, what to assert, no type-assertion casts"
+has 'tsconfig|project\.json|\.eslintrc|eslint\.config|nx\.json' && add nx.md "Quality, Angular" "path aliases, project config, module boundaries"
 
 line ""
 [ -f "$root/kb/repo-instructions/INDEX.md" ] && line "INDEX kb/repo-instructions/INDEX.md - says which file AND section holds a rule; look a topic up here before deciding there is no standard"
