@@ -45,7 +45,7 @@ Infer from actual code, not theory:
 Applied after the filter, per included category (categories: Architecture & Quality, Logic, Angular, Tests, Accessibility, Apollo & Styling, Security & Performance, Contract).
 
 - Category is `🔴 Fail` only if it has at least one Critical or High finding. Otherwise `🟢 Pass` (including no findings).
-- Medium and Low never fail a category; they go in "Things to address". Suggestions never affect the result.
+- Medium and Low never fail a category; they go in "Things to address". Suggestions never affect the result. **Exception, mandatory readability fixes:** a verified stacked-class-binding finding (`CLASSBIND?`, passes.md Styling) fails Apollo & Styling, and a verified restating-comments finding (`COMMENT?`, passes.md Quality) fails Architecture & Quality, until the added lines are fixed. They are posted as Medium (the label does not change) and counted in "To address" as Medium, but the category status is `🔴 Fail` and the result is `Changes requested`. Re-reviews apply the same rule to what remains at the new head.
 - Result: no category failed -> `**Review result:** Approved` (`gh pr review --approve`). At least one failed -> `**Review result:** Changes requested` (`--request-changes`).
 - Incomplete review (gh failure, a review unit or the cross-unit pass not completed, a planned agent not run for any reason including cost, incomplete diff, agent error/timeout, area "not completed"): `--comment` only, no result line, add `Not verified` using the words `not completed` (`scripts/lint-review.sh` keys on them).
 - PR body says it must be held/paired with another change: add a short "Before merge" note under Things to address; the rule above is unchanged.
@@ -126,7 +126,8 @@ These classify findings (labels: Critical|High|Medium|Low). Every surviving find
 - HttpClient instead of NgxHttpClient in LXP code
 - mutate() on signals instead of update()/set()
 - ngOnInit() {} or other empty lifecycle hooks
-- ngClass/ngStyle instead of class/style bindings
+- ngStyle instead of style bindings; `ngClass` maps and stacked `[class.x]` bindings that repeat one condition (Medium, mandatory: collapse into one computed class string bound with `[class]`)
+- Comments that restate the code, narrate, run multi-line or sit on obvious members (Medium, mandatory when a file adds 3 or more: keep only a one-line non-obvious why)
 - *ngIf/*ngFor instead of @if/@for
 - Globals/arrow functions/regex in templates
 
