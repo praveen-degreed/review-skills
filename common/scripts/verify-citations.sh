@@ -17,6 +17,11 @@
 #   MISMATCH <cite>  <reason>         token not near the cited line (hint lists nearby real lines)
 #   UNVERIFIABLE <cite>  <reason>     file was skipped by fetch-pr.sh (binary, too large, deleted)
 #   UNCHECKED <cite>  <reason>        not a changed file and no checkout: must be labelled "local checkout"
+#
+# With --added, a cite into a changed file whose line(s) the PR did not add (read from <fetch-dir>/pr.diff)
+# prints CONTEXT instead of OK: the line is unchanged context, so a finding on it is out of scope unless the
+# diff makes that line wrong. CONTEXT does not change the exit code; the caller drops or re-cites the finding.
+#   CONTEXT <cite>  <reason>          line is not added by this PR
 # Exit 1 if any BAD, MISMATCH or UNVERIFIABLE; otherwise 0. Last line is a summary.
 set -u
 die() { echo "verify-citations: $*" >&2; exit 2; }
@@ -24,11 +29,12 @@ die() { echo "verify-citations: $*" >&2; exit 2; }
 W=${VERIFY_WINDOW:-5}
 case $W in '' | *[!0-9]*) die "VERIFY_WINDOW must be a number" ;; esac
 
-checkout="" mode=verify rest=""
+checkout="" mode=verify rest="" added=0
 while [ $# -gt 0 ]; do
   case $1 in
     --checkout) checkout=${2:-}; shift ;;
     --find) mode=find ;;
+    --added) added=1 ;;
     *) rest="$rest$1"$'\n' ;;
   esac
   shift
@@ -68,7 +74,22 @@ cites=$(printf '%s' "$rest" | sed 1d)
 if [ -z "$cites" ] && [ ! -t 0 ]; then cites=$(cat); fi
 [ -n "$cites" ] || die "no citations given"
 
-ok=0 problems=0 unchecked=0
+# --added: the lines this PR adds, as "path<TAB>line" (same parse as review-scan.sh)
+addedtsv=""
+if [ "$added" = 1 ]; then
+  [ -f "$dir/pr.diff" ] || die "--added needs $dir/pr.diff"
+  addedtsv=$(mktemp "${TMPDIR:-/tmp}/verify-added.XXXXXX") || die "cannot create a temp file"
+  trap 'rm -f "$addedtsv"' EXIT
+  awk '/^diff --git / { f = $4; sub(/^b\//, "", f); inh = 0; next }
+    /^@@/ { match($0, /\+[0-9]+/); n = substr($0, RSTART + 1, RLENGTH - 1) + 0; inh = 1; next }
+    !inh { next }
+    /^\\/ { next }
+    /^\+/ { printf "%s\t%d\n", f, n; n++; next }
+    /^-/ { next }
+    { n++ }' "$dir/pr.diff" >"$addedtsv"
+fi
+
+ok=0 problems=0 unchecked=0 context=0
 while IFS= read -r raw; do
   [ -z "$raw" ] && continue
   cite=$raw token=""
@@ -103,11 +124,19 @@ while IFS= read -r raw; do
       problems=$((problems + 1)); continue
     fi
   fi
+  if [ "$added" = 1 ] && [ $rc -eq 0 ] && ! awk -F'\t' -v f="$rp" -v s="$s" -v e="$e" '$1 == f && $2 + 0 >= s && $2 + 0 <= e { found = 1 } END { exit !found }' "$addedtsv"; then
+    echo "CONTEXT $raw$via  line is not added by this PR (unchanged context): $text"
+    context=$((context + 1)); continue
+  fi
   echo "OK $raw$via  $text"
   ok=$((ok + 1))
 done <<EOF
 $cites
 EOF
 
-echo "verify-citations: $ok ok, $problems problem(s), $unchecked unchecked"
+if [ "$added" = 1 ]; then
+  echo "verify-citations: $ok ok, $problems problem(s), $unchecked unchecked, $context context (not added by this PR)"
+else
+  echo "verify-citations: $ok ok, $problems problem(s), $unchecked unchecked"
+fi
 [ "$problems" -eq 0 ]

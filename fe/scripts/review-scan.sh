@@ -312,6 +312,33 @@ awk -F'\t' '$1 ~ /\.ts$/ && $3 ~ /(as never|as unknown as|as any)([^A-Za-z0-9_]|
   END { for (f in n) if (n[f] >= 3) printf "CAST? %s:%d %d added casts (as never / as unknown as / as any) (rule: Medium in production code, Medium in specs per testing.md; a typed helper or fixture removes them)\n", f, first[f], n[f] }' "$added" | sort | cap 20 >>"$out"
 grep -q '^CAST?' "$out" || emit "(none)"
 
+# ---------------------------------------------------------------- ANGULAR
+# Angular rules a checklist read misses. Each is a lead to confirm, not a finding.
+section "ANGULAR (template method calls, effect() that moves focus, ngOnChanges beside signal inputs)"
+# a method call WITH arguments in a binding, interpolation, @if/@for/@switch or @let re-runs on every change detection
+awk -F'\t' '
+  function hit(s) {
+    return (s ~ /[{][{][^}]*[A-Za-z_][A-Za-z0-9_.]*[(][^()]+[)]/ ||
+            s ~ /\[[A-Za-z0-9_.:-]+\]="[^"]*[A-Za-z_][A-Za-z0-9_.]*[(][^()]+[)]/ ||
+            s ~ /@(if|for|switch) *[(].*[A-Za-z_][A-Za-z0-9_.]*[(][^()]+[)]/ ||
+            s ~ /@let +[A-Za-z_]+ *=.*[A-Za-z_][A-Za-z0-9_.]*[(][^()]+[)]/)
+  }
+  $1 ~ /\.html$/ && $3 !~ /^[ \t]*<!--/ && $3 !~ /[$]any[(]/ && hit($3) {
+    t = $3; sub(/^[ \t]+/, "", t)
+    print "ANGULAR? " $1 ":" $2 " method call with arguments in a template (re-runs on every change detection; use computed(), @let or a pure pipe, angular.md): " substr(t, 1, 80)
+  }' "$web_added" | head -12 >>"$out"
+# focus moved from a plain effect() instead of afterRenderEffect()
+awk -F'\t' '
+  $3 ~ /(^|[^A-Za-z])effect\(/ && $3 !~ /[Aa]fterRender|afterNextRender/ { eff[$1] = $2 }
+  $3 ~ /\.focus\(/ && ($1 in eff) && $2 - eff[$1] <= 15 && $2 >= eff[$1] {
+    print "ANGULAR? " $1 ":" $2 " focus moved inside an effect(): use afterRenderEffect() (angular.md), a plain effect runs mid change detection"
+  }' "$ts_added" | head -6 >>"$out"
+# ngOnChanges in a class that already uses signal inputs
+awk -F'\t' '$3 ~ /ngOnChanges\(/ { print $1 "\t" $2 }' "$ts_added" | while IFS=$'\t' read -r p l; do
+  [ -f "$dir/head/$p" ] && grep -qE 'input(\.required)?[(<]' "$dir/head/$p" && echo "ANGULAR? $p:$l ngOnChanges beside signal inputs: react with computed()/effect() on the signals instead (angular.md)"
+done | head -4 >>"$out"
+grep -q '^ANGULAR?' "$out" || emit "(none)"
+
 # ---------------------------------------------------------------- SECURITY
 section "SECURITY (verify each; most hits are fine in context)"
 while IFS=$'\t' read -r re label; do
@@ -327,7 +354,7 @@ bypassSecurityTrust	sanitizer bypass
 window\.open\(	window.open (validate URL, noopener)
 (location\.(href|assign|replace)|window\.location) *(=|\()	redirect from data (validate target)
 postMessage\(	postMessage (check target origin)
-console\.(log|debug|info|warn)\(	console output (PII/token leak risk)
+console\.(log|debug|info|warn|error|trace)\(|(^|[^A-Za-z0-9_.])debugger[;( ]	console output or debugger (security.md: remove before merge; PII/token leak risk)
 Math\.random\(\)	Math.random is not secure for tokens or ids
 EOF
 awk -F'\t' '$1 ~ /\.html$/ && $3 ~ /target="_blank"/ && $3 !~ /rel=/ { print "SEC? " $1 ":" $2 " target=_blank without rel=noopener: " substr($3, 1, 90) }' "$web_added" | head -5 >>"$out"
@@ -335,6 +362,6 @@ awk -F'\t' '$1 ~ /\.html$/ && $3 ~ /\[(href|src|srcdoc)\]/ { print "SEC? " $1 ":
 awk '/^SEC\?/ { f = 1 } END { exit !f }' "$out" || emit "(none)"
 
 emit ""
-emit "review-scan: $(grep -c -E '^(REUSE|CONSTANT|HELPER|PLACE|CLASSBIND|COMMENT|DGAT|IME|CAST|SEC)\?' "$out") lead(s)"
+emit "review-scan: $(grep -c -E '^(REUSE|CONSTANT|HELPER|PLACE|CLASSBIND|COMMENT|DGAT|IME|CAST|ANGULAR|SEC)\?' "$out") lead(s)"
 rm -f "$added" "$ts_added" "$web_added"
 cat "$out"

@@ -13,7 +13,7 @@ One label per finding, first tag, e.g. `[High][Angular]`. Rate by user/maintaine
 | Level | Meaning | Examples |
 |---|---|---|
 | Critical | Must fix before merge | hardcoded secret, `bypassSecurityTrust*`, open redirect, unsanitized `innerHTML`, keyboard/AT-blocking barrier, data loss, broken build |
-| High | Should fix before merge | control awkward by keyboard, `subscribe()` with no cleanup, `any` on public API, business logic in component |
+| High | Should fix before merge | control awkward by keyboard, a WCAG 2.2 AA contrast failure (text under 4.5:1, a UI boundary or control under 3:1) or a control with no accessible name, `subscribe()` with no cleanup, `any` on public API, business logic in component |
 | Medium | Fix soon | method call in template, function over size limit, reinvented shared util, magic timeout/limit/path (see Review method), repeated uncached API call, stacked `[class.x]` bindings that repeat one condition, comments that restate the code (both are mandatory fixes, see Styling and Quality) |
 | Low | Nit | missing `tw-` prefix, explicit `standalone: true`/`OnPush`, commented-out code, leftover `eslint-disable`, naming |
 
@@ -108,7 +108,8 @@ Review Quality top-down and stop descending when a higher level already explains
 - `*ngIf`/`*ngFor`/`*ngSwitch` instead of `@if`/`@for`/`@switch`; `@for` tracking by `$index` when an id exists
 - Signal Forms are the standard; flag new reactive/template-driven forms, untyped forms, `[(ngModel)]`
 - `effect()` misuse (state sync that should be `computed`/`linkedSignal`); signal inputs not called as functions
-- method calls, globals, arrow functions, regex in templates
+- focus moved from a plain `effect()` (use `afterRenderEffect()`, angular.md); an `effect()` plus `untracked` used only to start a one-shot load; `ngOnChanges` in a class that already uses signal inputs (react with `computed`/`effect` on the signals); a plain mutable field read once beside signals in an OnPush component; a hand-rolled `destroyed` flag where `takeUntilDestroyed`/`DestroyRef` does the job
+- method calls with arguments, globals, arrow functions, regex in templates (the scan's `ANGULAR?` leads list method calls in bindings, interpolation, `@if`/`@for` and `@let`; a call inside a `@for` row re-runs on every change detection: Medium unless cached with `@let` or computed); an expression repeated across bindings in one `@for` row belongs in a `@let` (angular.md)
 - nested subscribes; `subscribe()` just to set a property (use `async`/`toSignal`); `BehaviorSubject` for simple state
 - empty lifecycle hooks; `any`; import-path violations (relative cross-library imports, missing `@degreed/*` alias, deep imports past the barrel)
 
