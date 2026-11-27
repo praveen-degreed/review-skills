@@ -30,7 +30,7 @@ NX MONOREPO:
 
 EMPTY-CHUNK RISK (CRITICAL):
 7. Flag NEW pure re-export barrels: an index.ts whose ONLY content is `export * from '...'`, on a lazy-loaded path (route loadComponent/loadChildren target, or imported by 2+ lazy routes).
-   WHY: in production builds the re-exported code is hoisted into a shared chunk, leaving the barrel as a 0-BYTE chunk still statically imported; it is served without a JS MIME type, so the route fails with "Failed to fetch dynamically imported module". Prod/optimized builds only. Ref: PD-129882, esbuild#1747, angular-cli#26572.
+   WHY: in production builds the re-exported code is hoisted into a shared chunk, leaving the barrel as a 0-BYTE chunk still statically imported; it is served without a JS MIME type, so the route fails with "Failed to fetch dynamically imported module". Prod/optimized builds only. Ref: esbuild#1747, angular-cli#26572.
    FIX: import the concrete file directly, OR explicit named re-exports (`export { X } from './x'`), OR a side-effect marker `(globalThis as any)['__k']=true;`.
    Only `export *` barrels on lazy paths; explicit named-export barrels are fine.
 
