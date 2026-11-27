@@ -239,6 +239,79 @@ for p in $files_ts; do
 done
 grep -q '^PLACE?' "$out" || emit "(none)"
 
+# ---------------------------------------------------------------- CLASSBIND
+# Several [class.x] bindings that repeat one condition, or many in one file, belong in one computed class string.
+section "CLASSBIND (stacked [class.x] bindings: mandatory fix, one computed class string bound with [class])"
+awk -F'\t' '
+  $1 ~ /\.html$/ && $3 ~ /\[class\.[^]]+\]="/ {
+    t = $3; sub(/^[^=]*="/, "", t); sub(/"[ \t]*$/, "", t); gsub(/[ \t]+/, " ", t)
+    total[$1]++; if (!($1 in firstf)) firstf[$1] = $2
+    if (t != "" && t !~ /^[ \t]*$/) { k = $1 SUBSEP t; cnt[k]++; if (!(k in first)) first[k] = $2 }
+  }
+  END {
+    for (k in cnt) if (cnt[k] >= 3) { split(k, a, SUBSEP); printf "CLASSBIND? %s:%d %d [class.*] bindings share the condition `%s` (rule: Medium; collapse into one computed class string bound with [class])\n", a[1], first[k], cnt[k], substr(a[2], 1, 70) }
+    for (f in total) if (total[f] >= 4) printf "CLASSBIND? %s:%d %d added [class.*] bindings in this file (rule: Medium; group the ones driven by the same signals into one computed class string)\n", f, firstf[f], total[f]
+  }' "$web_added" | sort | cap 30 >>"$out"
+grep -q '^CLASSBIND?' "$out" || emit "(none)"
+
+# ---------------------------------------------------------------- COMMENT
+# Added comment lines in non-spec code: most restate the code. Counts and long runs, so the review is not a guess.
+section "COMMENT (added comment lines; keep only a one-line non-obvious why, delete the rest: mandatory fix when 3 or more)"
+awk -F'\t' '
+  $1 ~ /\.(ts|html|scss)$/ && $1 !~ /\.(spec|test|d)\.ts$/ && $3 ~ /^[ \t]*(\/\/|\/\*\*|\*([ \t]|$)|<!--)/ && $3 !~ /(eslint|TODO|FIXME|@ts-|prettier-ignore)/ {
+    n[$1]++; if (!($1 in firstf)) firstf[$1] = $2
+    if ($1 == pf && $2 == pl + 1) run++; else run = 1
+    if (run == 3) { rf[++nr] = $1; rl[nr] = $2 - 2 }
+    pf = $1; pl = $2
+    if (length($3) > 120) long[$1]++
+  }
+  END {
+    for (f in n) if (n[f] >= 3) printf "COMMENT? %s:%d %d added comment lines%s (rule: Medium; delete the ones that restate the code, trim the rest to one line)\n", f, firstf[f], n[f], (long[f] ? sprintf(", %d over 120 chars", long[f]) : "")
+    for (i = 1; i <= nr; i++) printf "COMMENT? %s:%d run of 3+ consecutive comment lines (rule: multi-line comment; reduce to one line or delete)\n", rf[i], rl[i]
+  }' "$added" | sort | cap 40 >>"$out"
+grep -q '^COMMENT?' "$out" || emit "(none)"
+
+# ---------------------------------------------------------------- DGAT
+# quality.md: every interactive element in new or changed templates needs a data-dgat. Reads the whole tag at the PR head.
+section "DGAT (interactive element added without data-dgat: quality.md, Medium)"
+printf '%s\n' "$(cut -f1 "$web_added" | sort -u)" | while IFS= read -r p; do
+  case "$p" in *.html|*.component.ts) ;; *) continue ;; esac
+  [ -f "$dir/head/$p" ] || continue
+  awk -F'\t' -v f="$p" '$1 == f { print $2 }' "$web_added" >"$dir/.addedlines.tmp"
+  awk -v f="$p" '
+    NR == FNR { add[$1] = 1; next }
+    {
+      line = $0
+      if (!intag && match(line, /<(button|input|select|textarea|a)([ \t]|$)/)) { intag = 1; tag = ""; start = FNR; hot = 0 }
+      if (intag) {
+        tag = tag " " line
+        if (line ~ />[ \t]*$/ || line ~ />[ \t]*[^<]*$/) {
+          if (tag ~ /<input[^>]*type="hidden"/) { }
+          else if (tag !~ /data-dgat/ && (tag ~ /<(button|select|textarea|input)/ || tag ~ /\(click\)|href=|routerLink/)) { if (start in add) printf "DGAT? %s:%d interactive element without data-dgat: %s\n", f, start, substr(tag, 1, 70) }
+          intag = 0
+        }
+      }
+    }' "$dir/.addedlines.tmp" "$dir/head/$p"
+done | head -20 >>"$out"
+rm -f "$dir/.addedlines.tmp"
+grep -q '^DGAT?' "$out" || emit "(none)"
+
+# ---------------------------------------------------------------- IME
+# An Enter handler that ignores IME composition sends half-typed Japanese/Chinese/Korean text.
+section "IME (Enter handler without an isComposing check: multilingual input bug)"
+cut -f1 "$web_added" | sort -u | while IFS= read -r p; do
+  [ -f "$dir/head/$p" ] || continue
+  grep -q 'isComposing\|keyCode *=== *229' "$dir/head/$p" && continue
+  awk -F'\t' -v f="$p" '$1 == f && ($3 ~ /keydown\.enter|keyup\.enter|key *=== *.Enter./) { print "IME? " $1 ":" $2 " Enter handler, no event.isComposing check in this file: " substr($3, 1, 80) }' "$web_added" | head -2
+done >>"$out"
+grep -q '^IME?' "$out" || emit "(none)"
+
+# ---------------------------------------------------------------- CAST
+section "CAST (type holes: as never, as unknown as, as any; type the value or the fixture instead)"
+awk -F'\t' '$1 ~ /\.ts$/ && $3 ~ /(as never|as unknown as|as any)([^A-Za-z0-9_]|$)/ { n[$1]++; if (!($1 in first)) first[$1] = $2 }
+  END { for (f in n) if (n[f] >= 3) printf "CAST? %s:%d %d added casts (as never / as unknown as / as any) (rule: Medium in production code, Medium in specs per testing.md; a typed helper or fixture removes them)\n", f, first[f], n[f] }' "$added" | sort | cap 20 >>"$out"
+grep -q '^CAST?' "$out" || emit "(none)"
+
 # ---------------------------------------------------------------- SECURITY
 section "SECURITY (verify each; most hits are fine in context)"
 while IFS=$'\t' read -r re label; do
@@ -262,6 +335,6 @@ awk -F'\t' '$1 ~ /\.html$/ && $3 ~ /\[(href|src|srcdoc)\]/ { print "SEC? " $1 ":
 awk '/^SEC\?/ { f = 1 } END { exit !f }' "$out" || emit "(none)"
 
 emit ""
-emit "review-scan: $(grep -c -E '^(REUSE|CONSTANT|HELPER|PLACE|SEC)\?' "$out") lead(s)"
+emit "review-scan: $(grep -c -E '^(REUSE|CONSTANT|HELPER|PLACE|CLASSBIND|COMMENT|DGAT|IME|CAST|SEC)\?' "$out") lead(s)"
 rm -f "$added" "$ts_added" "$web_added"
 cat "$out"

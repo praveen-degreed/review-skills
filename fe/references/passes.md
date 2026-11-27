@@ -14,7 +14,7 @@ One label per finding, first tag, e.g. `[High][Angular]`. Rate by user/maintaine
 |---|---|---|
 | Critical | Must fix before merge | hardcoded secret, `bypassSecurityTrust*`, open redirect, unsanitized `innerHTML`, keyboard/AT-blocking barrier, data loss, broken build |
 | High | Should fix before merge | control awkward by keyboard, `subscribe()` with no cleanup, `any` on public API, business logic in component |
-| Medium | Fix soon | method call in template, function over size limit, reinvented shared util, magic timeout/limit/path (see Review method), repeated uncached API call |
+| Medium | Fix soon | method call in template, function over size limit, reinvented shared util, magic timeout/limit/path (see Review method), repeated uncached API call, stacked `[class.x]` bindings that repeat one condition, comments that restate the code (both are mandatory fixes, see Styling and Quality) |
 | Low | Nit | missing `tw-` prefix, explicit `standalone: true`/`OnPush`, commented-out code, leftover `eslint-disable`, naming |
 
 ## Kind
@@ -61,6 +61,7 @@ For each changed file, in this order:
 
 Quality rules that follow from it (kind rule; severity as stated):
 
+- **Repo standards first** (`standards.txt`): the team's own written rules in `kb/repo-instructions/standards/*.md` outrank this file. Typical ones a human reviewer checks and a checklist misses: `data-dgat` on every interactive element in new or changed templates (a new button without one is Medium), the one-line comment standard and "no ticket numbers in comments" (quality.md), every user-facing string and aria text through the translation call with a key (i18n.md; an untranslated default input on a shared component is a finding), lazy loading and cleanup (performance.md), Spectator and timer conventions (testing.md). Cite the file and line.
 - **Reinvented shared code** (a util, service, pipe, component, model or constant that already exists): Medium. High only when the hand-rolled version is demonstrably weaker on security or correctness (sanitising, encoding, auth, URL building); state the difference.
 - **Magic values**: Low for a stray literal; Medium for a timeout, delay, limit, page size, threshold, API path, storage key, route or feature key, or any value used in two or more places. Fix: a named `UPPER_SNAKE_CASE` constant in the feature's `<feature>.constants.ts` (the existing one if present, per the scan's CONSTANT-HOME), `as const` or an enum for related sets. Not constants: `0`, `1`, `-1`, array indexes, a translation key used once, test fixtures.
 - **Big or tangled functions**: a function over 50 lines, nesting deeper than 3, or doing two or more jobs (fetch, map, format, side effect) is Medium. Fix: name the helpers and the cut points. Pure data logic goes to a `<feature>.utils.ts` function that is testable without TestBed; component methods stay thin.
@@ -98,6 +99,7 @@ Review Quality top-down and stop descending when a higher level already explains
 ## 1. Styling
 - **tag:** `Styling` | **scope:** changed `.html`, `.scss`, `.css`, `.ts`
 - inline styles; hardcoded colors; `ngClass`/`ngStyle`; arbitrary Tailwind values; arbitrary `z-index`; `!important`; `::ng-deep`; manual `@media` instead of Tailwind breakpoints; missing `tw-` prefix; custom CSS where a Tailwind utility exists
+- **Stacked class bindings (mandatory fix, Medium, Rule, never a Suggestion; readability and correctness).** On one element, 3 or more added `[class.x]` bindings that test the same signal or flag (or the same pair of flags, e.g. `!showError() && maestroStyle()`), or an added/extended `[ngClass]`/`[class]` map that tests one flag in 3 or more keys, or a pair of opposite bindings on one input (`!flush()` / `flush()`), must be collapsed into ONE `computed` in the `.ts` that returns the class string (or one wrapper/host class when the same `[class.x]="flag()"` repeats on siblings) and bound once with `[class]`. The repeated conditions have to be kept mutually exclusive by hand and cannot be asserted in one place. This replaces the older "use `[class.x]`, never `ngClass`" advice for these cases: a single non-overlapping `[class.x]="cond"` stays fine. Use the scan's `CLASSBIND?` leads as the starting list, open each element, and report ONE finding per file listing every spot (up to 5 cites, then "N more") with a Fix sample showing the `computed`. Inline templates in `.ts` files are not scanned: check them yourself.
 
 ## 2. Angular
 - **tag:** `Angular` | **scope:** changed `.ts`, `.html`
@@ -133,9 +135,10 @@ Architecture and structure
 - classes over 300 lines or multiple responsibilities; functions over 50 lines; nesting deeper than 3 levels
 - missing error handling on async operations; magic numbers; dead code, unused imports, commented-out code; leftover `eslint-disable`; TODO without ticket; unnecessary `ComponentV2`-style version suffixes
 
-Comments (human-style)
-- flag comments that restate the code, narrate steps, run multi-line, are docblocks on obvious members, or carry ticket numbers
-- allowed: one line explaining a non-obvious trap or "why"
+Comments (human-style) - **mandatory fix, Medium, Rule, never a Suggestion, when a file adds 3 or more comment lines that fail the test below** (readability: every comment is code that must stay true)
+- flag comments that restate the code, narrate steps, run multi-line, are docblocks on obvious members (an input, a getter, a private predicate, a class named by its own name), run over about 120 characters, or carry ticket numbers or acceptance-criteria tags
+- allowed: ONE line explaining a non-obvious trap or "why" (an ordering constraint, a browser quirk, a backend contract). If deleting the comment loses nothing a reader could not get from the name and the code, delete it
+- Use the scan's `COMMENT?` leads (per-file counts and runs of 3+ consecutive comment lines) as the starting list, open each, and report ONE finding per file listing the worst spots (up to 5 cites, then "N more") with the count. Only comments on lines this diff adds; a comment on an unchanged line is out of scope unless this diff makes it wrong. Do not accept "the comments explain a complex change" as a reason: complexity belongs in names and small functions.
 
 Models
 - API/domain shapes are a typed interface in a `.model.ts`; no all-optional shapes (split or make required); no duplicate of an existing model (search first)

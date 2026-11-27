@@ -37,7 +37,7 @@ FORMS (when forms are present; Signal Forms are the standard):
 TEMPLATE ANTI-PATTERNS:
 15. No globals in templates (new Date(), Math.*, JSON.*)
 16. No arrow functions or RegExp in templates
-17. No ngClass - use [class.name]; no ngStyle - use [style.property]
+17. No ngStyle - use [style.property]. For classes: a single [class.name]="cond" is fine, but 3+ added [class.x] bindings on one element that repeat the same condition(s), an [ngClass] map testing one flag in 3+ keys, or opposite bindings on one input must become ONE computed class string bound with [class]. This is a mandatory Medium Rule (never a Suggestion): list every spot, per file, from the scan's CLASSBIND? leads. Likewise 3+ added comment lines in a file that restate the code, narrate, run multi-line or sit on obvious members are a mandatory Medium Rule (COMMENT? leads): keep only a one-line non-obvious "why".
 
 TYPESCRIPT:
 18. Types properly defined; no unjustified `any` (use `unknown`); no Observable<any>/Promise<any> return types
